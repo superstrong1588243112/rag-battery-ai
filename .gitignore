@@ -1,0 +1,11 @@
+.env
+*.pyc
+__pycache__/
+.streamlit/secrets.toml
+streamlit*.log
+data/processed/codex_backups/
+data/processed/chunks_md/
+test_api_key.py
+test_api_response.py
+test_openai.py
+mineru_temp/
