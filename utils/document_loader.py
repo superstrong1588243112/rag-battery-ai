@@ -4,8 +4,7 @@ import re
 from pathlib import Path
 
 import fitz  # PyMuPDF
-from langchain.docstore.document import Document
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from utils.simple_document import Document
 
 try:
     import pdfplumber
@@ -384,14 +383,44 @@ def extract_topic(filename):
     return "综合"
 
 
+def _split_text(text, chunk_size, chunk_overlap):
+    separators = ["\n\n", "\n", "。", "！", "？", "；", "，", ".", " "]
+    pieces = [text]
+    for separator in separators:
+        next_pieces = []
+        for piece in pieces:
+            if len(piece) <= chunk_size:
+                next_pieces.append(piece)
+            else:
+                parts = piece.split(separator)
+                for part in parts:
+                    part = part.strip()
+                    if part:
+                        next_pieces.append(part + (separator if separator.strip() else ""))
+        pieces = next_pieces
+
+    chunks = []
+    current = ""
+    for piece in pieces:
+        if len(current) + len(piece) <= chunk_size:
+            current += piece
+        else:
+            if current:
+                chunks.append(current.strip())
+            overlap = current[-chunk_overlap:] if chunk_overlap and current else ""
+            current = overlap + piece
+    if current:
+        chunks.append(current.strip())
+    return [chunk for chunk in chunks if chunk]
+
+
 def split_documents(documents, chunk_size=900, chunk_overlap=160):
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        length_function=len,
-        separators=["\n\n", "\n", "。", "！", "？", "；", "，", ".", " ", ""],
-    )
-    chunks = splitter.split_documents(documents)
+    chunks = []
+    for doc in documents:
+        for text_chunk in _split_text(doc.page_content, chunk_size, chunk_overlap):
+            metadata = dict(doc.metadata)
+            chunks.append(Document(page_content=text_chunk, metadata=metadata))
+
     for index, chunk in enumerate(chunks):
         chunk.metadata["chunk_id"] = index
         source = chunk.metadata.get("source", "未知来源")

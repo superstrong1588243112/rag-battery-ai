@@ -2,7 +2,7 @@ import importlib.util
 import unittest
 from pathlib import Path
 
-from langchain.docstore.document import Document
+from utils.simple_document import Document
 
 from config import Config
 from utils.document_loader import extract_text_by_columns_fitz, is_two_column_layout_fitz
@@ -13,7 +13,7 @@ from utils.vector_db import VectorDB
 class ImprovementTests(unittest.TestCase):
     def test_runtime_dependencies_are_declared(self):
         requirements = Path("requirements.txt").read_text(encoding="utf-8")
-        for package in ["PyMuPDF", "pdfplumber", "openai", "jieba", "scikit-learn", "Pillow"]:
+        for package in ["PyMuPDF", "pdfplumber", "openai", "jieba", "scikit-learn", "Pillow", "rich"]:
             self.assertIn(package, requirements)
 
     def test_core_files_compile(self):

@@ -3,13 +3,13 @@ import os
 import pickle
 from collections import defaultdict
 
-import faiss
 import jieba
 import numpy as np
-from langchain.docstore.document import Document
+from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 from config import Config
+from utils.simple_document import Document
 
 
 class HybridVectorDB:
@@ -22,15 +22,11 @@ class HybridVectorDB:
         self.inverted_index = defaultdict(list)
         self.doc_count = 0
         self.vectorizer = None
-        self.index = None
-        self.embedding_dim = 0
+        self.matrix = None
 
     @staticmethod
     def has_index(path):
-        return (
-            os.path.exists(os.path.join(path, "index.faiss"))
-            and os.path.exists(os.path.join(path, "meta.pkl"))
-        )
+        return os.path.exists(os.path.join(path, "meta.pkl"))
 
     def _tokenize(self, text):
         import re
@@ -56,9 +52,7 @@ class HybridVectorDB:
             for token, count in counts.items():
                 self.inverted_index[token].append((doc_id, count))
 
-        self.avg_doc_length = (
-            sum(self.doc_lengths) / len(self.doc_lengths) if self.doc_lengths else 0
-        )
+        self.avg_doc_length = sum(self.doc_lengths) / len(self.doc_lengths) if self.doc_lengths else 0
 
     def _idf(self, term):
         doc_freq = len(self.inverted_index.get(term, []))
@@ -106,20 +100,15 @@ class HybridVectorDB:
             sublinear_tf=True,
             norm="l2",
         )
-        matrix = self.vectorizer.fit_transform(texts)
-        dense = matrix.astype(np.float32).toarray()
-        if dense.size == 0:
-            dense = np.zeros((len(texts), 1), dtype=np.float32)
-        faiss.normalize_L2(dense)
-        self.embedding_dim = dense.shape[1]
-        self.index = faiss.IndexFlatIP(self.embedding_dim)
-        self.index.add(dense)
+        self.matrix = self.vectorizer.fit_transform(texts).astype(np.float32)
+        if self.matrix.shape[1] == 0:
+            self.matrix = sparse.csr_matrix((len(texts), 1), dtype=np.float32)
 
     def create_index(self, documents):
-        print(f"[索引] 创建混合索引，片段数: {len(documents)}")
+        print(f"[索引] 创建云端稳定混合索引，片段数: {len(documents)}")
         self._build_bm25(documents)
         self._build_vectors(documents)
-        print(f"[索引] 完成，向量维度: {self.embedding_dim}")
+        print(f"[索引] 完成，向量维度: {self.matrix.shape[1]}")
 
     def search(self, query, top_k=5):
         if self.doc_count == 0:
@@ -129,16 +118,11 @@ class HybridVectorDB:
         combined = {}
 
         vector_scores = []
-        if self.index is not None and self.vectorizer is not None:
-            query_vec = self.vectorizer.transform([query]).astype(np.float32).toarray()
-            if query_vec.shape[1] == self.embedding_dim:
-                faiss.normalize_L2(query_vec)
-                scores, ids = self.index.search(query_vec, min(candidate_count, self.doc_count))
-                vector_scores = [
-                    (int(doc_id), float(score))
-                    for doc_id, score in zip(ids[0], scores[0])
-                    if int(doc_id) >= 0
-                ]
+        if self.matrix is not None and self.vectorizer is not None:
+            query_vec = self.vectorizer.transform([query]).astype(np.float32)
+            scores = (self.matrix @ query_vec.T).toarray().ravel()
+            top_ids = np.argsort(scores)[::-1][: min(candidate_count, self.doc_count)]
+            vector_scores = [(int(doc_id), float(scores[doc_id])) for doc_id in top_ids if scores[doc_id] > 0]
 
         bm25_scores = self._search_bm25(query, candidate_count)
         max_bm25 = max((score for _, score in bm25_scores), default=1.0)
@@ -196,9 +180,6 @@ class HybridVectorDB:
 
     def save(self, path):
         os.makedirs(path, exist_ok=True)
-        if self.index is None:
-            raise RuntimeError("Cannot save an empty vector index")
-        faiss.write_index(self.index, os.path.join(path, "index.faiss"))
         data = {
             "documents": self.documents,
             "doc_lengths": self.doc_lengths,
@@ -208,11 +189,14 @@ class HybridVectorDB:
             "k1": self.k1,
             "b": self.b,
             "vectorizer": self.vectorizer,
-            "embedding_dim": self.embedding_dim,
+            "matrix": self.matrix,
         }
         with open(os.path.join(path, "meta.pkl"), "wb") as file:
             pickle.dump(data, file)
-        print(f"[保存] 混合索引已保存到 {path}")
+        old_faiss = os.path.join(path, "index.faiss")
+        if os.path.exists(old_faiss):
+            os.remove(old_faiss)
+        print(f"[保存] 云端稳定索引已保存到 {path}")
 
     def load(self, path):
         with open(os.path.join(path, "meta.pkl"), "rb") as file:
@@ -225,9 +209,8 @@ class HybridVectorDB:
         self.k1 = data["k1"]
         self.b = data["b"]
         self.vectorizer = data["vectorizer"]
-        self.embedding_dim = data["embedding_dim"]
-        self.index = faiss.read_index(os.path.join(path, "index.faiss"))
-        print(f"[加载] 混合索引已加载，片段数: {self.doc_count}")
+        self.matrix = data["matrix"]
+        print(f"[加载] 云端稳定索引已加载，片段数: {self.doc_count}")
 
     def is_empty(self):
         return self.doc_count == 0
